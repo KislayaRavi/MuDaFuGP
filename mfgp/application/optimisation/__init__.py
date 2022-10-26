@@ -1,0 +1,1 @@
+from mfgp.application.optimisation.mf_bayes_opt import MFBayesOpt

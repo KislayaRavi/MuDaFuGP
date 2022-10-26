@@ -1,0 +1,21 @@
+#!./env/bin/python
+from mfgp.models.abstractMFGPGeneral import AbstractMFGPGeneral
+from mfgp.adaptation_maximizers import *
+import numpy as np
+
+
+class NARGP_General(AbstractMFGPGeneral):
+    """Gaussian Process with NARGP, 
+    expects high-fidelity data to train its high-fidelity model and low-fidelity data to train its
+    low-fidelity model. Augments high-fidelity data with low-fidelity predictions.
+    Uses standard composite kernel with ARD weigts.
+    """
+
+    def __init__(self, input_dim: int, f_list: np.ndarray, init_X: np.ndarray,
+                lower_bound: np.ndarray, upper_bound: np.ndarray, adapt_maximizer: AbstractMaximizer, name: str = 'NARGP',
+                eps: float = 1e-8, expected_acq_fn: bool = False, stochastic: bool = False,
+                surrogate_lowest_fidelity=True):
+
+        super().__init__(name, input_dim, f_list, init_X, 0, None, lower_bound, upper_bound,
+                         adapt_maximizer, eps, expected_acq_fn=expected_acq_fn,
+                         stochastic=stochastic, surrogate_lowest_fidelity=surrogate_lowest_fidelity)

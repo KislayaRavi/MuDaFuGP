@@ -1,0 +1,4 @@
+from mfgp.adaptation_maximizers.abstract_maximizer import AbstractMaximizer
+from mfgp.adaptation_maximizers.scipydirect_wrapper import ScipyDirectMaximizer
+from mfgp.adaptation_maximizers.scipy_opt import ScipyOpt
+from mfgp.adaptation_maximizers.scipy_opt import ScipyOpt1
