@@ -38,19 +38,19 @@ def create_mfgp_nuts_obj(lower_bound, upper_bound):
     return mfgp_nuts
 
 def create_model(method_name, input_dim, f_list, init_X, num_derivative, tau, lower_bound, upper_bound, maximiser=ScipyDirectMaximizer,
-                 eps=1e-6, expected_acq_fn: bool=False, stochastic=False, surrogate_lowest_fidelity=False):
+                 eps=1e-6, expected_acq_fn: bool=False, surrogate_lowest_fidelity=False):
     model = None 
     if method_name == "NARGP":
         model = NARGP_General(input_dim, f_list, init_X, lower_bound, upper_bound, maximiser, 
-                              eps=eps, expected_acq_fn=expected_acq_fn, stochastic=stochastic,
+                              eps=eps, expected_acq_fn=expected_acq_fn,
                               surrogate_lowest_fidelity=surrogate_lowest_fidelity)
     elif method_name == "GPDF":
         model = GPDF_General(input_dim, num_derivative, tau, f_list, init_X, lower_bound, upper_bound, maximiser, 
-                             eps=eps, expected_acq_fn=expected_acq_fn, stochastic=stochastic,
+                             eps=eps, expected_acq_fn=expected_acq_fn,
                              surrogate_lowest_fidelity=surrogate_lowest_fidelity)
     elif method_name == "GPDFC":
         model = GPDFC_General(input_dim, num_derivative, tau, f_list, init_X, lower_bound, upper_bound, maximiser, 
-                              eps=eps, expected_acq_fn=expected_acq_fn, stochastic=stochastic,
+                              eps=eps, expected_acq_fn=expected_acq_fn,
                               surrogate_lowest_fidelity=surrogate_lowest_fidelity)
     else:
         raise ValueError("Wrong method name")

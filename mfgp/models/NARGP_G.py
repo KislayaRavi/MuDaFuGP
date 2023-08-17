@@ -12,10 +12,8 @@ class NARGP_General(AbstractMFGPGeneral):
     """
 
     def __init__(self, input_dim: int, f_list: np.ndarray, init_X: np.ndarray,
-                lower_bound: np.ndarray, upper_bound: np.ndarray, adapt_maximizer: AbstractMaximizer, name: str = 'NARGP',
-                eps: float = 1e-8, expected_acq_fn: bool = False, stochastic: bool = False,
-                surrogate_lowest_fidelity=True):
-
+                lower_bound: np.ndarray, upper_bound: np.ndarray, adapt_maximizer: AbstractMaximizer,
+                **kwargs):
+        name='NARGP'
         super().__init__(name, input_dim, f_list, init_X, 0, None, lower_bound, upper_bound,
-                         adapt_maximizer, eps, expected_acq_fn=expected_acq_fn,
-                         stochastic=stochastic, surrogate_lowest_fidelity=surrogate_lowest_fidelity)
+                         adapt_maximizer, **kwargs)

@@ -9,19 +9,19 @@ import matplotlib.pyplot as plt
 
 
 def create_model(method_name, input_dim, f_list, init_X, num_derivative, tau, lower_bound, upper_bound, maximiser,
-                 eps=1e-6, expected_acq_fn: bool=False, stochastic=False, surrogate_lowest_fidelity=True):
+                 eps=1e-6, expected_acq_fn: bool=False, monte_carlo_prediction=False, surrogate_lowest_fidelity=True):
     model = None 
     if method_name == "NARGP":
         model = NARGP_General(input_dim, f_list, init_X, lower_bound, upper_bound, maximiser, 
-                              eps=eps, expected_acq_fn=expected_acq_fn, stochastic=stochastic,
+                              eps=eps, expected_acq_fn=expected_acq_fn, monte_carlo_prediction=monte_carlo_prediction,
                               surrogate_lowest_fidelity=surrogate_lowest_fidelity)
     elif method_name == "GPDF":
         model = GPDF_General(input_dim, num_derivative, tau, f_list, init_X, lower_bound, upper_bound, maximiser, 
-                             eps=eps, expected_acq_fn=expected_acq_fn, stochastic=stochastic,
+                             eps=eps, expected_acq_fn=expected_acq_fn, monte_carlo_prediction=monte_carlo_prediction,
                              surrogate_lowest_fidelity=surrogate_lowest_fidelity)
     elif method_name == "GPDFC":
         model = GPDFC_General(input_dim, num_derivative, tau, f_list, init_X, lower_bound, upper_bound, maximiser, 
-                              eps=eps, expected_acq_fn=expected_acq_fn, stochastic=stochastic,
+                              eps=eps, expected_acq_fn=expected_acq_fn, monte_carlo_prediction=monte_carlo_prediction,
                               surrogate_lowest_fidelity=surrogate_lowest_fidelity)
     else:
         raise ValueError("Wrong method name")
@@ -84,18 +84,26 @@ def test_mfgp_general_2fidelities_1d(method_name, curve_number, num_derivative=1
     plt.show()
 
 def test_stochastic(name):
-    f_list, init_X, X_test, y_test = ex3F.get_curve1([100, 60, 30], 200)
+    f_list, df_list, init_X, X_test, y_test = ex3F.get_curve1([100, 60, 30], 200)
+    # X_train_hf, X_train_lf, _, f_high, f_low, X_test, y_test = ex1D.get_curve2(num_hf=20, num_lf=100)
+    # f_list = [f_low, f_high]
+    # init_X = [np.atleast_2d(X_train_lf), np.atleast_2d(X_train_hf)]
     dim = 1
-    model1 = AbstractMFGPGeneral(name, dim, f_list, init_X, None, None, [0]*dim, [1]*dim, ScipyDirectMaximizer, 1e-6, stochastic=False)
-    model2 = AbstractMFGPGeneral(name, dim, f_list, init_X, None, None, [0]*dim, [1]*dim, ScipyDirectMaximizer, 1e-6, stochastic=True)
-    X_plot = np.linspace(0, 1, 500)
-    mean1, _ = model1.predict(X_plot[:, None])
-    # mean2, _ = model2.predict(X_plot[:, None])
+    model2 = create_model(name, dim, f_list, init_X, 0, 0, [0]*dim, [0]*dim, ScipyDirectMaximizer, monte_carlo_prediction=False)
+    model1 = create_model(name, dim, f_list, init_X, 0, 0, [0]*dim, [0]*dim, ScipyDirectMaximizer, monte_carlo_prediction=True)
+    # model2 = AbstractMFGPGeneral(name, dim, f_list, init_X, None, None, [0]*dim, [1]*dim, ScipyDirectMaximizer, 1e-6, monte_carlo_prediction=True)
+    X_plot = np.linspace(0, 1, 100)
+    mean1, var1 = model1.predict(X_plot[:, None])
+    mean2, var2 = model2.predict(X_plot[:, None])
     plt.plot(X_plot, f_list[0](X_plot), label="Low Fidelity")
     plt.plot(X_plot, f_list[1](X_plot), label="Medium Fidelity")
     plt.plot(X_plot, f_list[2](X_plot), label="High fidelity")
-    plt.plot(X_plot, mean1, label="Non stochastic")
-    # plt.plot(X_plot, mean2, label="Stochastic")
+    plt.plot(X_plot, mean1, label="Stochastic", color='r')
+    plt.plot(X_plot, mean1+np.sqrt(var1), 'r--')
+    plt.plot(X_plot, mean1-np.sqrt(var1), 'r--')
+    plt.plot(X_plot, mean2, label="Non-Stochastic", color='y')
+    plt.plot(X_plot, mean2+np.sqrt(var2), 'y--')
+    plt.plot(X_plot, mean2-np.sqrt(var2), 'y--')
     plt.legend()
     plt.show()
 
@@ -113,11 +121,12 @@ def test_mfgp_general_2fidelities_2d(method_name, curve_number, num_derivative=1
         raise ValueError("The curve number does not exist")
     dim, f_list, init_X = 2, [f_low, f_high], [X_train_lf, X_train_hf]
     lower_bound, upper_bound = [0]*dim, [1]*dim
-    surrogate_low_fidelity = False  
+    surrogate_low_fidelity = True  
     model = create_model(method_name, dim, f_list, init_X, num_derivative, tau, lower_bound, upper_bound, 
-                         maximiser, expected_acq_fn=False, surrogate_lowest_fidelity=surrogate_low_fidelity)
+                         maximiser, expected_acq_fn=False, surrogate_lowest_fidelity=surrogate_low_fidelity,
+                         monte_carlo_prediction=True)
+    model.adapt(5, [2, 1])
     mse = model.get_mse(X_test, y_test)
-    model.adapt(5, [1])
     print("Mean square error is", mse)
     numerical_derivative = model.models[-1].numerical_grad_mean(X_test)
     _, _, gp_derivative = model.models[-1].predict_grad(X_test)
@@ -140,7 +149,6 @@ def test_mfgp_general_3fidelities_1d(method_name, curve_number, num_derivative=1
     surrogate_lowest_fidelity = True
     model = create_model(method_name, dim, f_list, init_X, num_derivative, tau, lower_bound, upper_bound, maximiser, 
                          expected_acq_fn=False, surrogate_lowest_fidelity=surrogate_lowest_fidelity)
-    mse = model.get_mse(X_test, y_test)
     model.adapt(1, [2, 2, 5])
     X_plot = np.linspace(0, 1, 1000)
     mean, sigma = model.predict(X_plot[:, None])
@@ -153,16 +161,17 @@ def test_mfgp_general_3fidelities_1d(method_name, curve_number, num_derivative=1
     plt.fill_between(X_plot, (mean-1.96*sigma)[:, 0], (mean+1.96*sigma)[:, 0], color='r', alpha=0.2, label='99% CI')
     plt.scatter(model.models[-1].hf_X, f_list[2](model.models[-1].hf_X))
     plt.legend()
+    mse = model.get_mse(X_test, y_test)
     print("Mean square error is", mse)
     numerical_derivative = model.models[-1].numerical_grad_mean(X_test)
     _, _, gp_derivative = model.models[-1].predict_grad(X_test)
-    print("Error:", np.mean(np.abs((numerical_derivative - gp_derivative)/numerical_derivative)))
+    print("Error in gradient w.r.t. numerical values:", np.mean(np.abs((numerical_derivative - gp_derivative)/numerical_derivative)))
     plt.show()
 
 if __name__ == '__main__':
     # TODO: MSE looks strange, have a look at it
-    # test_mfgp_general_2fidelities_1d("NARGP", 1, test_derivative=True)
-    test_mfgp_general_3fidelities_1d("GPDFC", 1)
+    test_mfgp_general_2fidelities_1d("NARGP", 1, test_derivative=True)
+    # test_mfgp_general_3fidelities_1d("GPDFC", 1)
     # test_mfgp_general_2fidelities_2d("GPDFC", 1)
     # in 2fidelities_1d all test cases work other than 3(in NARGP, but works fine with GPDF and GPDFC)
-    # test_stochastic("NARGP") # Stochastic needs more fine tuning
+    # test_stochastic("GPDF") # Stochastic needs more fine tuning

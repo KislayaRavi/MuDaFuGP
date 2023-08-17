@@ -272,6 +272,36 @@ class GP(object):
                 print("Matrix not invertible issue happened, ignoring ARD")
                 pass
         return hf_model.predict_f(X_test)
+    
+    def sample_from_posterior(self, X_test, num_samples=1):
+        """for an array of input vectors draw sample from posterior
+
+        :param X_test: input vectors
+        :type X_test: np.ndarray
+        :return: target values per input vector
+        :rtype: np.ndarray
+        """
+
+        assert X_test.ndim == 2
+        assert X_test.shape[1] == self.input_dim
+        
+        mean = self.model.predict_f_samples(X_test, num_samples)
+        return mean
+    
+    def one_sample_from_posterior(self, X_test):
+        """for an array of input vectors draw sample from posterior
+
+        :param X_test: input vectors
+        :type X_test: np.ndarray
+        :return: target values per input vector
+        :rtype: np.ndarray
+        """
+
+        assert X_test.ndim == 2
+        assert X_test.shape[1] == self.input_dim
+        
+        mean = self.model.predict_f_samples(X_test, 1)
+        return mean.numpy()[0]
 
     def adapt(self, num_steps: int, eps=1e-6):
         """

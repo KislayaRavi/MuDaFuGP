@@ -1,5 +1,6 @@
 import numpy as np
 from mfgp.models import GP 
+import matplotlib.pyplot as plt
 np.random.seed(20)
 
 
@@ -26,5 +27,11 @@ def test_gp(dim, function, lower_bound, upper_bound, num_init_points=10, num_ada
 
 
 if __name__ == '__main__':
-    gp_obj = test_gp(1, function1, [0], [1])
+    gp_obj = test_gp(1, function1, [0], [1], num_adapt_steps=6)
+    X_test = np.linspace(0,1,500)[:, None]
+    num_samples = 10
+    for i in range(num_samples):
+        samples = gp_obj.sample_from_posterior(X_test, num_samples=num_samples)
+        plt.plot(X_test, samples[0])
+    plt.show()
     gp_obj.plot1d()

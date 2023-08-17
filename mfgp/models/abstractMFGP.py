@@ -4,6 +4,7 @@ import gpflow
 import tensorflow as tf
 from collections import OrderedDict
 import matplotlib.pyplot as plt
+from mfgp.models.GP import GP
 from mfgp.adaptation_maximizers import ScipyOpt, AbstractMaximizer
 from mfgp.acquisition_functions import MaxUncertaintyAcquisition, ExpectVarAcquisition
 from mfgp.kernels.squared_exponential import SquaredExponential
@@ -15,7 +16,7 @@ class AbstractMFGP(metaclass=abc.ABCMeta):
 
     @abc.abstractmethod
     def __init__(self, name: str, input_dim: int, num_derivatives: int, tau: float, f_exact: callable,
-                 lower_bound: np.ndarray, upper_bound: float, f_low: callable, lf_X: np.ndarray = None, lf_Y: np.ndarray = None,
+                 lower_bound: np.ndarray, upper_bound: float, f_low: callable, lf_gp_surrogate: callable=None,
                  lf_hf_adapt_ratio: int = 1, use_composite_kernel: bool = True, adapt_maximizer: AbstractMaximizer =ScipyOpt(), 
                  eps: float = 1e-8, expected_acq_fn: bool= False, f_low_grad:callable = None):
 
@@ -49,7 +50,7 @@ class AbstractMFGP(metaclass=abc.ABCMeta):
 
         self.initialize_kernel(use_composite_kernel)
 
-        self.initialize_lf_level(f_low, lf_X, lf_Y)
+        self.initialize_lf_level(f_low, lf_gp_surrogate=lf_gp_surrogate)
 
         self.f_low_grad, self.use_numerical_grad = f_low_grad, False 
         if  f_low_grad is None:
@@ -105,7 +106,8 @@ class AbstractMFGP(metaclass=abc.ABCMeta):
         gpflow.utilities.set_trainable(kern1.variance, False)
         return kern1 * kern2 + kern3 + white_noise
 
-    def initialize_lf_level(self, f_low: callable = None, lf_X: np.ndarray = None, lf_Y: np.ndarray = None):
+    def initialize_lf_level(self, f_low: callable = None,
+                            lf_gp_surrogate: callable=None):
         """
         initialize low-fidelity level by python function or by trained GP model,
         pass either a lf prediction function or lf training data
@@ -117,23 +119,20 @@ class AbstractMFGP(metaclass=abc.ABCMeta):
         :type lf_Y: np.ndarray
         """
         # check if the parameters are correctly given
-        lf_model_params_are_valid = (f_low is not None) ^ (
-            (lf_X is not None) and (lf_Y is not None) and (self.lf_hf_adapt_ratio is not None))
-        assert lf_model_params_are_valid, 'define low-fidelity model either by predicition function or by data'
-        self.data_driven_lf_approach = f_low is None
-        if self.data_driven_lf_approach:
-            self.lf_X = lf_X
-            self.lf_Y = lf_Y
-            self.lf_model = gpflow.models.GPR(data=(self.lf_X, self.lf_Y), kernel=SquaredExponential())
-            self.lf_model.likelihood.variance.assign(1e-5)
-            gpflow.utilities.set_trainable(self.lf_model.likelihood.variance, False)
-            opt = gpflow.optimizers.Scipy()
-            opt_logs = opt.minimize(self.lf_model.training_loss, 
-                                    self.lf_model.trainable_variables, 
-                                    options=dict(maxiter=100))
-            self.f_low = lambda t: (self.lf_model.predict(t)[0]).numpy()
+        # lf_model_params_are_valid = (f_low is not None) ^ (
+        #     (lf_gp_surrogate is not None) and (self.lf_hf_adapt_ratio is not None))
+        # assert lf_model_params_are_valid, 'define low-fidelity model either by predicition function or by data'
+        self.f_low = f_low 
+        if lf_gp_surrogate is not None:
+            self.f_low_predict_temp = lf_gp_surrogate
         else:
-            self.f_low = f_low
+            self.f_low_predict_temp = f_low
+    
+    def f_low_predict(self, t):
+        val = np.atleast_2d(self.f_low_predict_temp(t))
+        if val.shape[1] >  1:
+            val = val.T
+        return val
 
     def adapt_lf(self):
         """optimizes the hf-model by acquiring additional hf-training points for training"""
@@ -227,7 +226,7 @@ class AbstractMFGP(metaclass=abc.ABCMeta):
             key = tuple(x)
             if key not in self.fhigh_dict.keys():
                 self.fhigh_dict[key] = hf_Y[idx, 0]
-        X, Y = tf.convert_to_tensor(self.__augment_Data(self.hf_X)), tf.convert_to_tensor(self.hf_Y)
+        X, Y = tf.convert_to_tensor(self.__augment_Data(self.hf_X, self.f_low)), tf.convert_to_tensor(self.hf_Y)
         self.hf_model = gpflow.models.GPR(data=(X,Y),kernel=self.kernel)
         # ARD steps
         try:
@@ -258,7 +257,7 @@ class AbstractMFGP(metaclass=abc.ABCMeta):
         assert self.hf_Y.shape == (self.hf_X.shape[0], 1)
 
         # create the high-fidelity model with augmented X and exact Y
-        X, Y = tf.convert_to_tensor(self.__augment_Data(self.hf_X)), tf.convert_to_tensor(self.hf_Y)
+        X, Y = tf.convert_to_tensor(self.__augment_Data(self.hf_X, self.f_low)), tf.convert_to_tensor(self.hf_Y)
         self.hf_model = gpflow.models.GPR(data=(X,Y),kernel=self.kernel)
 
         # ARD steps
@@ -282,7 +281,7 @@ class AbstractMFGP(metaclass=abc.ABCMeta):
 
         assert X_test.ndim == 2
         assert X_test.shape[1] == self.input_dim
-        augmented_data = self.__augment_Data(X_test)
+        augmented_data = self.__augment_Data(X_test, self.f_low_predict)
         new_entries_count = self.augm_iterator.new_entries_count()
         augmented_locations = np.array( list( map(lambda x: [x + i * self.tau for i in self.augm_iterator], X_test) ) )
         X_tensor = tf.convert_to_tensor(augmented_data)
@@ -330,14 +329,14 @@ class AbstractMFGP(metaclass=abc.ABCMeta):
         assert X_test.ndim == 2
         assert X_test.shape[1] == self.input_dim
 
-        X_test = tf.convert_to_tensor(self.__augment_Data(X_test))
+        X_test = tf.convert_to_tensor(self.__augment_Data(X_test, self.f_low_predict))
         
         # if self.add_noise:
         #     self.hf_model.likelihood.variance.assign(1e-5)
         mean, var = self.hf_model.predict_f(X_test)
         return mean.numpy(), var.numpy()
 
-    def sample_from_posterior(self, X_test, size=1):
+    def sample_from_posterior(self, X_test, num_samples=1):
         """for an array of input vectors draw sample from posterior
 
         :param X_test: input vectors
@@ -349,12 +348,31 @@ class AbstractMFGP(metaclass=abc.ABCMeta):
         assert X_test.ndim == 2
         assert X_test.shape[1] == self.input_dim
 
-        X_test = tf.convert_to_tensor(self.__augment_Data(X_test))
+        X_test = tf.convert_to_tensor(self.__augment_Data(X_test, self.f_low_predict))
         
         # if self.add_noise:
         #     self.hf_model.likelihood.variance.assign(1e-5)
-        mean, var = self.hf_model.predict_f_samples(X_test, num_samples=size)
-        return mean.numpy(), var.numpy()
+        sample = self.hf_model.predict_f_samples(X_test, num_samples=num_samples)
+        return sample
+    
+    def one_sample_from_posterior(self, X_test):
+        """for an array of input vectors draw sample from posterior
+
+        :param X_test: input vectors
+        :type X_test: np.ndarray
+        :return: target values per input vector
+        :rtype: np.ndarray
+        """
+
+        assert X_test.ndim == 2
+        assert X_test.shape[1] == self.input_dim
+
+        X_test = tf.convert_to_tensor(self.__augment_Data(X_test, self.f_low_predict))
+        
+        # if self.add_noise:
+        #     self.hf_model.likelihood.variance.assign(1e-5)
+        sample = self.hf_model.predict_f_samples(X_test, num_samples=1)
+        return sample.numpy()[0]
 
     def predict_opt(self, X, X_test, ard=False):
         """
@@ -374,7 +392,7 @@ class AbstractMFGP(metaclass=abc.ABCMeta):
         assert hf_Y.shape == (hf_X.shape[0], 1)
 
         # create the high-fidelity model with augmented X and exact Y
-        X_train, Y_train = tf.convert_to_tensor(self.__augment_Data(hf_X)), tf.convert_to_tensor(hf_Y)
+        X_train, Y_train = tf.convert_to_tensor(self.__augment_Data(hf_X, self.f_low_predict)), tf.convert_to_tensor(hf_Y)
         hf_model = gpflow.models.GPR(data=(X_train, Y_train), kernel=self.kernel)
 
         # ARD steps
@@ -384,7 +402,7 @@ class AbstractMFGP(metaclass=abc.ABCMeta):
             except:
                 print("Matrix not invertible issue happened, ignoring ARD")
                 pass
-        X_temp = tf.convert_to_tensor(self.__augment_Data(X_test))
+        X_temp = tf.convert_to_tensor(self.__augment_Data(X_test, self.f_low_predict))
         mean, var = hf_model.predict_f(X_temp)
         return mean.numpy(), var.numpy()
 
@@ -407,7 +425,7 @@ class AbstractMFGP(metaclass=abc.ABCMeta):
         mse = mean_squared_error(y_true=Y_test, y_pred=preds)
         return mse
 
-    def __augment_Data(self, X):
+    def __augment_Data(self, X, f_low):
         """
         augments high-fidelity inputs with corresponding low-fidelity predictions.
         The augmentation pattern is determined by self.augm_iterator
@@ -432,11 +450,11 @@ class AbstractMFGP(metaclass=abc.ABCMeta):
         assert augm_locations.shape == (len(X), new_entries_count, self.input_dim)
 
         # compute the lf-prediction on those neighbour positions
-        new_augm_entries = np.array(list(map(self.f_low, augm_locations)))
+        new_augm_entries = np.array(list(map(f_low, augm_locations)))
         # print("new_augm_entries.shape : ", new_augm_entries.shape)
         if new_augm_entries.shape == (len(X), new_entries_count):
             new_augm_entries = np.atleast_3d(new_augm_entries)
-        assert new_augm_entries.shape == (len(X), new_entries_count, 1)
+        assert new_augm_entries.shape == (len(X), new_entries_count, 1), 'Wrong shape ' + str(new_augm_entries.shape)
 
         # flatten the results of f_low
         new_entries = np.array([entry.flatten() for entry in new_augm_entries])

@@ -1,17 +1,20 @@
 import numpy as np
+from sklearn.metrics import mean_squared_error
 import abc
+import warnings
 import matplotlib.pyplot as plt
 from mfgp.adaptation_maximizers import AbstractMaximizer
 from mfgp.acquisition_functions import MaxUncertaintyAcquisition, ExpectVarAcquisition
 import mfgp.models as models
+
 
 class AbstractMFGPGeneral(metaclass=abc.ABCMeta):
 
     # @abc.abstractmethod
     def __init__(self, name: str, input_dim: int, f_list: list, init_X: list, 
                  num_derivatives: int, tau: float, lower_bound: np.ndarray, upper_bound: float,
-                 adapt_maximizer: AbstractMaximizer, eps: float, 
-                 expected_acq_fn: bool=False, stochastic: bool=False,
+                 adapt_maximizer: AbstractMaximizer, eps: float = 1e-8, 
+                 expected_acq_fn: bool=False, monte_carlo_prediction: bool=False,
                  surrogate_lowest_fidelity: bool=True, f_lowest_grad=None):
 
         super().__init__()
@@ -30,22 +33,25 @@ class AbstractMFGPGeneral(metaclass=abc.ABCMeta):
             self.lower_bound = lower_bound
             self.upper_bound = upper_bound
 
-        self.models, self.stochastic = [], stochastic
+        self.models, self.monte_carlo_prediction = [], monte_carlo_prediction
+        if monte_carlo_prediction:
+            warnings.warn('The implementation of the derivative is not correct when one uses prediction by montecarlo method')
         self.__initialise_models(init_X, f_lowest_grad)
 
-    def __initialise_one_model(self, f_low, f_high, hf_X, f_low_grad):
+    def __initialise_one_model(self, f_low, f_high, hf_X, f_low_surrogate, f_low_grad):
         model = None 
         if self.name == 'NARGP':
             model = models.NARGP(self.input_dim, f_high, f_low, lower_bound=self.lower_bound, upper_bound=self.upper_bound, 
-                                 eps=self.eps, expected_acq_fn=self.expected_acq_fn, f_low_grad=f_low_grad) 
+                                 eps=self.eps, expected_acq_fn=self.expected_acq_fn, f_low_grad=f_low_grad, 
+                                 lf_gp_surrogate=f_low_surrogate) 
         elif self.name == 'GPDF':
             model = models.GPDF(self.input_dim, self.tau, self.num_derivatives, f_high, f_low,
                                 lower_bound=self.lower_bound, upper_bound=self.upper_bound, eps=self.eps, 
-                                expected_acq_fn=self.expected_acq_fn, f_low_grad=f_low_grad)
+                                expected_acq_fn=self.expected_acq_fn, f_low_grad=f_low_grad, lf_gp_surrogate=f_low_surrogate)
         else: 
             model = models.GPDFC(self.input_dim, self.tau, self.num_derivatives, f_high, f_low,
                                  lower_bound=self.lower_bound, upper_bound=self.upper_bound, eps=self.eps,
-                                 expected_acq_fn=self.expected_acq_fn, f_low_grad=f_low_grad)
+                                 expected_acq_fn=self.expected_acq_fn, f_low_grad=f_low_grad, lf_gp_surrogate=f_low_surrogate)
         
         model.fit(hf_X)
         return model 
@@ -58,14 +64,14 @@ class AbstractMFGPGeneral(metaclass=abc.ABCMeta):
             starting_index = 1
         else:
             self.models.append(self.f_list[0])
-            self.models.append(self.__initialise_one_model(self.models[0], self.f_list[1], init_X[1], f_lowest_grad))
+            self.models.append(self.__initialise_one_model(self.models[0], self.f_list[1], init_X[1], self.models[0], f_lowest_grad))
             starting_index = 2
         for i in range(starting_index, self.n_fidelities):
-            if self.stochastic:
-                self.models.append(self.__initialise_one_model(self.models[i-1].sample_from_posterior, self.f_list[i], 
-                                                               init_X[i], self.models[i-1].predict_grad))
+            if self.monte_carlo_prediction:
+                self.models.append(self.__initialise_one_model(self.f_list[i-1], self.f_list[i], 
+                                                               init_X[i], self.models[i-1].one_sample_from_posterior, self.models[i-1].predict_grad))
             else:
-                self.models.append(self.__initialise_one_model(self.models[i-1].get_mean, self.f_list[i], init_X[i], 
+                self.models.append(self.__initialise_one_model(self.f_list[i-1], self.f_list[i], init_X[i], self.models[i-1].get_mean,
                                                                self.models[i-1].predict_grad))
 
     def adapt(self, adapt_steps: int, points_per_fidelity: list):
@@ -84,17 +90,19 @@ class AbstractMFGPGeneral(metaclass=abc.ABCMeta):
                         print("Fidelity", idx+1)
                         self.models[idx+1].adapt(num_points)
 
-    def predict_stochastic(self, X_test, n_samples=100):
-        out = np.zeros((n_samples, len(X_test)))
-        for n in range(n_samples):
-            out[n, :] = self.models[-1].sample_from_posterior(X_test).ravel()
-        mean = np.mean(out, axis=0)
-        var = np.var(out, axis=0)
+    def sample_from_posterior(self, X_test: np.ndarray, num_samples:int, level:int=-1):
+        samples = self.models[level].sample_from_posterior(X_test, num_samples=num_samples)
+        return samples
+
+    def predict_monte_carlo(self, X_test, num_samples=50):
+        samples = self.sample_from_posterior(X_test, num_samples, level=-1)
+        mean = np.mean(samples, axis=0)
+        var = np.var(samples, axis=0)
         return mean, var 
 
     def predict(self, X_test):
-        if self.stochastic:
-            return self.predict_stochastic(X_test)
+        if self.monte_carlo_prediction:
+            return self.predict_monte_carlo(X_test)
         else:
             return self.models[-1].predict(X_test)
     
@@ -122,7 +130,7 @@ class AbstractMFGPGeneral(metaclass=abc.ABCMeta):
         return output         
 
     def get_mean(self, X_test):
-        Y, _ = self.models[-1].predict(X_test)
+        Y, _ = self.predict(X_test)
         return Y 
 
     def get_mse(self, X_test, Y_test):
@@ -135,4 +143,12 @@ class AbstractMFGPGeneral(metaclass=abc.ABCMeta):
         :return: mean square error
         :rtype: float
         """
-        return self.models[-1].get_mse(X_test, Y_test)
+
+        assert len(X_test) == len(Y_test), 'unequal number of X and y values'
+        assert X_test.shape[1] == self.input_dim, 'wrong input value dimension'
+        assert Y_test.shape[1] == 1, 'target values must be scalars'
+
+        preds, _ = self.predict(X_test)
+        mse = mean_squared_error(y_true=Y_test, y_pred=preds)
+        return mse
+        # return self.models[-1].get_mse(X_test, Y_test)
