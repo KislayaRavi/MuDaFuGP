@@ -8,7 +8,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import tensorflow_probability as tfp
 from mfgp.kernels.squared_exponential import SquaredExponential
-from mfgp.augm_iterators import EvenAugmentation, BackwardAugmentation
+from mfgp.augm_iterators import EvenAugmentation, BackwardAugmentation, ForwardAugmentation
+from mfgp.adaptation_maximizers import ScipyOpt, AbstractMaximizer
+from mfgp.acquisition_functions import MaxUncertaintyAcquisition, ExpectVarAcquisition
 from gpflow.config import default_float, default_jitter
 
 
@@ -31,12 +33,18 @@ def deriv_f_high(x):
 
 
 class DGPLayerBase(gpflow.models.SVGP):
-    def __init__(self, dim:int, kernel:gpflow.kernels, likelihood:gpflow.likelihoods, inducing_variable:np.ndarray, 
-                 lower_bound:np.ndarray, upper_bound:np.ndarray, **kwargs):
+    def __init__(self, function:callable, dim:int, kernel:gpflow.kernels, likelihood:gpflow.likelihoods, 
+                 inducing_variable:np.ndarray, lower_bound:np.ndarray, upper_bound:np.ndarray, 
+                 adapt_maximizer: AbstractMaximizer=ScipyOpt(), expected_acq_fn: bool= False, eps: float = 1e-6,**kwargs):
         super().__init__(kernel, likelihood, inducing_variable, **kwargs)
-        self.dim = dim
-        self.lower_bound, self.upper_bound = lower_bound, upper_bound
+        self.function, self.dim, self.adapt_maximizer = function, dim, adapt_maximizer
+        self.lower_bound, self.upper_bound, self.eps = lower_bound, upper_bound, eps
         self.opt = gpflow.optimizers.Scipy()
+        if expected_acq_fn: 
+            warnings.warn("Expected acquisition function is not implemented yet!")
+            # self.acquisition_obj = ExpectVarAcquisition(dim, self.lower_bound, self.upper_bound, self.predict_opt)
+        else: 
+            self.acquisition_obj = MaxUncertaintyAcquisition(self.predict_numpy)
 
     def set_data(self, X_train, Y_train):
         self.X_train, self.Y_train = X_train, Y_train
@@ -68,16 +76,19 @@ class DGPLayerBase(gpflow.models.SVGP):
 
     def train(self, maxiter=1000):
         gpflow.utilities.set_trainable(self.likelihood.variance, False)
+        print("++++++++++++++Training++++++++++++++")
         self.opt.minimize(self.neg_elbo_layer, self.trainable_variables, bounds=self.get_bounds(), options=dict(maxiter=maxiter))
     
-    ########################Adaptivity related functions begins(INCOMPLETE)########################
+    def predict_numpy(self, X_test):
+        mean, var = self.predict(X_test)
+        mean_numpy, var_numpy =  mean.numpy(), var.numpy()
+        # print(mean_numpy, var_numpy)
+        return mean_numpy, var_numpy
+
     def get_input_with_highest_uncertainty(self):
         """get input from input domain whose prediction comes with the highest uncertainty"""
-        assert hasattr(self, 'predict')
-
-        # x, fopt = self.adapt_maximizer.maximize(self.predict, self.lower_bound, self.upper_bound)
-        x, fopt = self.adapt_maximizer.maximize(self.acquisition_obj.acquisition_curve, self.lower_bound, self.upper_bound)
-        
+        assert hasattr(self, 'predict_numpy'), "predict_numpy function is not defined!"
+        x, fopt = self.adapt_maximizer.maximize(self.acquisition_obj.acquisition_curve, self.lower_bound, self.upper_bound)        
         return x, fopt
     
     def add_new_points(self, X_new):
@@ -91,8 +102,12 @@ class DGPLayerBase(gpflow.models.SVGP):
         """
         reshaped_new_inputs = np.atleast_2d(X_new)
         assert reshaped_new_inputs.shape[1] == self.dim
-        new_X = np.vstack((self.hf_X, reshaped_new_inputs))
-        self.fit(new_X)
+        X_new_tensor = tf.convert_to_tensor(reshaped_new_inputs, dtype=default_float())
+        Y_new_tensor = tf.convert_to_tensor(self.function(X_new_tensor), dtype=default_float())
+        X_train = tf.concat([self.X_train, X_new_tensor], axis=0)
+        Y_train = tf.concat([self.Y_train, Y_new_tensor], axis=0)
+        self.set_data(X_train, Y_train)
+        self.train()
 
     def adapt(self, adapt_steps:int, eps: float = 1e-6):
 
@@ -107,8 +122,10 @@ class DGPLayerBase(gpflow.models.SVGP):
         """
 
         for i in range(adapt_steps):
-            acquired_x, fopt = self.get_input_with_highest_uncertainty(self)
-
+            acquired_x, fopt = self.get_input_with_highest_uncertainty()
+            # We need to re-initialise the inducing points. Otherwise, things are stuck in the previous local minimum.
+            num_inducing = self.inducing_variable.num_inducing
+            self._init_variational_parameters(num_inducing, None, None, None)
             self.add_new_points(acquired_x)
 
             if np.abs(fopt) < self.eps:
@@ -116,7 +133,6 @@ class DGPLayerBase(gpflow.models.SVGP):
                 print("Iteration stopped after {} iterations!".format(i + 1)
                       + " minimum uncertainty reached: {:e}".format(fopt))
                 break
-    ########################Adaptivity related functions ends(INCOMPLETE)########################
 
     @abstractmethod
     def predict_grad(self, X_test):
@@ -132,8 +148,8 @@ class DGPLayerBase(gpflow.models.SVGP):
 
 class SVGPLayer(DGPLayerBase):
 
-    def __init__(self, dim, kernel, likelihood, inducing_variable, lower_bound, upper_bound, **kwargs):
-        super().__init__(dim, kernel, likelihood, inducing_variable, lower_bound, upper_bound, **kwargs)
+    def __init__(self, function, dim, kernel, likelihood, inducing_variable, lower_bound, upper_bound, **kwargs):
+        super().__init__(function, dim, kernel, likelihood, inducing_variable, lower_bound, upper_bound, **kwargs)
     
     def get_bounds(self, bound_inducing_variables=True):
         bounds = []
@@ -173,14 +189,14 @@ class SVGPLayer(DGPLayerBase):
 
 class AugmentedLayerAbstract(DGPLayerBase):
 
-    def __init__(self, dim, likelihood, num_inducing_points,
+    def __init__(self, function, dim, likelihood, num_inducing_points,
                  lower_bound, upper_bound, previous_layer: gpflow.models,
                  num_delays=0, tau=0.001, **kwargs):
         self.augm_iterator = EvenAugmentation(num_delays, dim=dim)
         self.tau = tau
         kernel = self.get_kernel(dim)
         inducing_variable = self.get_inducing_variable(num_inducing_points, dim, lower_bound, upper_bound)
-        super().__init__(dim, kernel, likelihood, inducing_variable, lower_bound, upper_bound, **kwargs)
+        super().__init__(function, dim, kernel, likelihood, inducing_variable, lower_bound, upper_bound, **kwargs)
         self.previous_layer = previous_layer
 
     def get_inducing_variable(self, num_inducing_points, dim, lower, upper):
@@ -256,11 +272,13 @@ class AugmentedLayerAbstract(DGPLayerBase):
 
 class NARDGPLayer(AugmentedLayerAbstract):
 
-    def __init__(self, dim, likelihood, num_inducing_points, lower_bound, upper_bound, previous_layer: gpflow.models, num_delays=0, tau=0.001, **kwargs):
+    def __init__(self, function, dim, likelihood, num_inducing_points, 
+                 lower_bound, upper_bound, previous_layer: gpflow.models, 
+                 num_delays=0, tau=0.001, **kwargs):
         if num_delays > 0:
             num_delays = 0
             warnings.warn("NARDGP layer does not support delays. Setting num_delays to 0.")
-        super().__init__(dim, likelihood, num_inducing_points, lower_bound, upper_bound, previous_layer, num_delays, tau, **kwargs)
+        super().__init__(function, dim, likelihood, num_inducing_points, lower_bound, upper_bound, previous_layer, num_delays, tau, **kwargs)
         
     def get_kernel(self, dim, kern_class1=SquaredExponential, kern_class2=SquaredExponential, 
                     kern_class3=SquaredExponential):
@@ -281,8 +299,10 @@ class NARDGPLayer(AugmentedLayerAbstract):
     
 class DGPDFCLayer(AugmentedLayerAbstract):
 
-    def __init__(self, dim, likelihood, num_inducing_points, lower_bound, upper_bound, previous_layer: gpflow.models, num_delays=1, tau=0.001, **kwargs):
-        super().__init__(dim, likelihood, num_inducing_points, lower_bound, upper_bound, previous_layer, num_delays, tau, **kwargs)
+    def __init__(self, function, dim, likelihood, num_inducing_points, 
+                 lower_bound, upper_bound, previous_layer: gpflow.models, 
+                 num_delays=1, tau=0.001, **kwargs):
+        super().__init__(function, dim, likelihood, num_inducing_points, lower_bound, upper_bound, previous_layer, num_delays, tau, **kwargs)
 
     def get_kernel(self, dim, kern_class1=SquaredExponential, kern_class2=SquaredExponential, 
                     kern_class3=SquaredExponential):
@@ -303,8 +323,10 @@ class DGPDFCLayer(AugmentedLayerAbstract):
     
 class DGPDFLayer(AugmentedLayerAbstract):
 
-    def __init__(self, dim, likelihood, num_inducing_points, lower_bound, upper_bound, previous_layer: gpflow.models, num_delays=1, tau=0.001, **kwargs):
-        super().__init__(dim, likelihood, num_inducing_points, lower_bound, upper_bound, previous_layer, num_delays, tau, **kwargs)
+    def __init__(self, function, dim, likelihood, num_inducing_points, 
+                 lower_bound, upper_bound, previous_layer: gpflow.models, 
+                 num_delays=1, tau=0.001, **kwargs):
+        super().__init__(function, dim, likelihood, num_inducing_points, lower_bound, upper_bound, previous_layer, num_delays, tau, **kwargs)
 
     def get_kernel(self, dim, kern_class=SquaredExponential):
         kern1 = kern_class()
@@ -312,7 +334,7 @@ class DGPDFLayer(AugmentedLayerAbstract):
 
 
 if __name__ == '__main__':
-    input_dim, num_low, num_high = 1, 30, 15
+    input_dim, num_low, num_high = 1, 30, 5
     lower, upper = 0, 1
     X_train_low = tf.linspace(lower, upper, num_low)[:, None]
     X_train_high = tf.linspace(lower, upper, num_high)[:, None]
@@ -323,7 +345,7 @@ if __name__ == '__main__':
     Z_low = tf.linspace(0, 1, num_inducing)[:, None]
     kernel = gpflow.kernels.SquaredExponential()
     likelihood = gpflow.likelihoods.Gaussian(variance=1e-4)
-    obj = SVGPLayer(input_dim, kernel, likelihood, Z_low, lower_bound, upper_bound, whiten=False)
+    obj = SVGPLayer(f_low, input_dim, kernel, likelihood, Z_low, lower_bound, upper_bound, whiten=False)
     obj.set_data(X_train_low, Y_train_low)
     gpflow.utilities.set_trainable(likelihood.variance, False)
     bounds = obj.get_bounds()
@@ -334,7 +356,7 @@ if __name__ == '__main__':
     obj.set_all_training_status_variables(status=False)
     num_inducing_points = 8
     likelihood1 = gpflow.likelihoods.Gaussian(variance=1e-4)
-    second_layer = DGPDFLayer(input_dim, likelihood1, num_inducing_points, lower_bound, upper_bound, obj)
+    second_layer = NARDGPLayer(f_high, input_dim, likelihood1, num_inducing_points, lower_bound, upper_bound, obj)
     gpflow.utilities.set_trainable(likelihood1.variance, False)
     second_layer.set_data(X_train_high, Y_train_high)
     bounds1 = second_layer.get_bounds()
@@ -349,13 +371,14 @@ if __name__ == '__main__':
     plt.scatter(X_train_low, Y_train_low, label='Training points')
     plt.legend()
     plt.show()
+    second_layer.adapt(5)
     plt.plot(X_test, f_high(X_test), label='Actual HF')
     Y_hf_predict, var_hf_predict = second_layer.predict(X_test)
     plt.plot(X_test, Y_hf_predict, label='Predict HF')
     std_hf_predict = tf.math.sqrt(var_hf_predict)
     plt.fill_between(X_test[:, 0], (Y_hf_predict+std_hf_predict)[:, 0], (Y_hf_predict-std_hf_predict)[:, 0], alpha=0.2)
     # plt.scatter(second_layer.inducing_variable.variables[0][:, 0], second_layer.q_mu, label='Inducing points')
-    plt.scatter(X_train_high, Y_train_high, label='Training points')
+    plt.scatter(second_layer.X_train, second_layer.Y_train, label='Training points')
     plt.legend()
     plt.show()
     # print(second_layer.predict_grad(X_train_high))
