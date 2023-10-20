@@ -2,11 +2,14 @@ import numpy as np
 import gpflow
 import tensorflow as tf
 from time import time
+import warnings
 from abc import ABC, abstractmethod
 from collections import OrderedDict
 import matplotlib.pyplot as plt
 from sklearn.metrics import mean_squared_error
 from mfgp.kernels.squared_exponential import SquaredExponential
+from mfgp.adaptation_maximizers import ScipyOpt, AbstractMaximizer
+from mfgp.acquisition_functions import MaxUncertaintyAcquisition, ExpectVarAcquisition
 
 
 class Zero_Scaling(gpflow.kernels.base.Kernel):
@@ -71,7 +74,7 @@ class BMGP(gpflow.base.Module):
     '''
     
     def __init__(self, input_dim: int, f_list: list, lower_bound: list, upper_bound: list,
-                 kernel_name: str='SquaredExponential') -> None:
+                 kernel_name: str='SquaredExponential', adapt_maximizer: AbstractMaximizer=ScipyOpt(), expected_acq_fn: bool= False, eps: float = 1e-6, **kwargs) -> None:
         """Initialser for BMGP
 
         Parameters
@@ -92,6 +95,11 @@ class BMGP(gpflow.base.Module):
         self.lower_bound, self.upper_bound = lower_bound, upper_bound     
         self.initialize_kernel(kernel_name=kernel_name)
         # self.likelihood_constant_term = tf.Variable(-0.5 * self.input_dim *tf.math.log(np.pi))
+        self.eps = eps
+        self.adapt_maximizer = adapt_maximizer
+        if expected_acq_fn: 
+            warnings.warn("Expected acquisition function is not implemented yet!")
+            # self.acquisition_obj = ExpectVarAcquisition(dim, self.lower_bound, self.upper_bound, self.predict_opt)
 
     @abstractmethod
     def initialize_kernel(self, kernel_name='SquaredExponential'):
@@ -147,6 +155,7 @@ class BMGP(gpflow.base.Module):
         assert len(X_train) == self.num_fidelities, 'Length of X_train is incorrect'
         assert len(Y_train) == self.num_fidelities, 'Length of Y_train is incorrect'
         self.X_train = X_train
+        self.Y_train = Y_train
         self.Y_train_concat = tf.concat(Y_train, axis=0)
     
     def fit(self):
@@ -163,6 +172,10 @@ class BMGP(gpflow.base.Module):
         # plt.show()
         # print(self.cholesky) 
         self.scaled_Y_train = tf.linalg.cholesky_solve(self.cholesky, self.Y_train_concat)
+        # try:
+        #     self.ARD()
+        # except:
+        #     warnings.warn("ARD is throwing an error. Check the kernel and the data. ARD might not work if the number of fidelities is greater than 3")
 
     def neg_unnormalised_log_likelihood(self):
         """Returns the negative of the un-normalised log likelihood. This is needed for ARD.
@@ -237,6 +250,29 @@ class BMGP(gpflow.base.Module):
         opt_logs = opt.minimize(self.neg_unnormalised_log_likelihood, 
                                 self.trainable_variables, 
                                 options=dict(maxiter=20))
+        
+    def adapt_one_level(self, num_steps:int, level:int=-1):
+        def predict_at_level(X_test):
+            mean, var = self.predict(X_test, level=level)
+            return mean.numpy(), var.numpy()
+        acquisition_obj = MaxUncertaintyAcquisition(predict_at_level)
+        for i in range(num_steps):
+            acquired_x, fopt = self.adapt_maximizer.maximize(acquisition_obj.acquisition_curve, self.lower_bound, self.upper_bound) 
+            acquired_y = self.f_list[level](acquired_x)
+            self.Y_train[level] = tf.concat([self.Y_train[level], acquired_y], axis=0)
+            self.X_train[level] = tf.concat([self.X_train[level], acquired_x[:, None]], axis=0)
+            # print(X_train)
+            # self.X_train[level] = X_temp
+            # self.Y_train[level] = Y_temp
+            self.Y_train_concat = tf.concat(self.Y_train, axis=0)
+            self.fit()
+    
+    def adapt(self, num_steps_per_level:list=None):
+        if num_steps_per_level is None:
+            num_steps_per_level = list(reversed(range(1, self.num_fidelities+1)))
+        for level, num_steps in enumerate(num_steps_per_level):
+            self.adapt_one_level(num_steps, level=level)
+            
 
 class AR1(BMGP):
     """Implementation from Kennedy and O'Hagan
@@ -480,7 +516,7 @@ def f_high(x):
     # return f_medium(x)*0.8
 
 if __name__ == '__main__':
-    input_dim, num_low, num_medium, num_high = 1, 50, 10, 5
+    input_dim, num_low, num_medium, num_high = 1, 50, 15, 7
     f_list = [f_low, f_high]
     X_train_low = tf.random.uniform((num_low,input_dim), minval=0, maxval=1, dtype=tf.float64)
     X_train_medium = tf.random.uniform((num_medium,input_dim), minval=0, maxval=1, dtype=tf.float64)
@@ -491,7 +527,7 @@ if __name__ == '__main__':
     Y_train_medium = f_medium(X_train_medium)
     Y_train_high = f_high(X_train_high)
     num_test = 200
-    X_test = tf.cast(tf.reshape(tf.linspace(0.1, 0.9, num_test), (num_test, input_dim)), dtype=tf.float64)
+    X_test = tf.cast(tf.reshape(tf.linspace(0, 1, num_test), (num_test, input_dim)), dtype=tf.float64)
     Y_test_high = f_high(X_test)
     Y_test_low = f_low(X_test)
     model = AR1(input_dim, f_list, lower_bound, upper_bound)
@@ -509,3 +545,13 @@ if __name__ == '__main__':
     # print(model.cholesky)
     # TODO: ARD works well for 2 fidelities. Fails after that. 
     # Putting bounds on each parameter based on fourier transformation will solve it. But, that is A LOT WORK :(
+    model.adapt_one_level(3)
+    model.ARD()
+    std = tf.sqrt(var)
+    plt.plot(X_test, Y_test_high, label='Actual HF')
+    plt.plot(X_test, mean, label='Predicted HF')
+    plt.fill_between(X_test[:, 0], (mean-std)[:, 0], (mean+std)[:, 0], alpha=0.2)
+    plt.scatter(model.X_train[-1], model.Y_train[-1], label='HF data')
+    # print(model.X_train[-1])
+    plt.legend()
+    plt.show()
