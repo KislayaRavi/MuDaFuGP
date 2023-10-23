@@ -6,3 +6,5 @@ from mfgp.models.GPDFC_G import GPDFC_General
 from mfgp.models.NARGP_G import NARGP_General
 from mfgp.models.abstractMFGPGeneral import AbstractMFGPGeneral
 from mfgp.models.GP import GP
+from mfgp.models.bmgp import AR1
+from mfgp.models.dgp import SVGPLayer, NARDGPLayer, DGPDFLayer, DGPDFCLayer

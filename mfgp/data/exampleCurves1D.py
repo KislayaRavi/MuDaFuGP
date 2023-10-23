@@ -5,6 +5,17 @@ import matplotlib.pyplot as plt
 np.random.seed(42)
 
 
+def get_linear_curve1(num_hf, num_lf):
+    def f_low(x):
+        X = np.atleast_2d(x)
+        return np.sin(8*np.pi*X)
+
+    def f_high(x):
+        # return f_low(x)**2
+        X = np.atleast_2d(x)
+        return f_low(x)*0.8 + 0.3*np.sin(2*np.pi*X)
+    return get_curve(f_low, f_high, num_hf, num_lf)
+
 def get_curve1(num_hf, num_lf):
     def f_low(t): return np.sin(8 * np.pi * t)
     def f_high(t): return np.sin(8 * np.pi * t)**2
@@ -110,19 +121,20 @@ def get_discontinuity5(num_hf, num_lf):
     return get_curve(f_low, f_high, num_hf, num_lf)
     
 
-def get_curve(f_low, f_high, num_hf, num_lf):
+def get_curve(f_low, f_high, num_hf, num_lf, num_test=200):
     f_low = np.vectorize(f_low)
     f_high = np.vectorize(f_high)
 
     N = num_lf + num_hf
 
-    train_proportion = 0.8
+    # train_proportion = 0.8
 
     X = np.linspace(0, 1, N)[:,None]
     np.random.shuffle(X)
 
-    X_train = X[:int(N * train_proportion)]
-    X_test = X[int(N * train_proportion):]
+    X_train = X[:int(N)]
+    # X_test = X[int(N * train_proportion):]
+    X_test = np.linspace(0, 1, num_test)[:,None]
 
     X_train_hf = X_train[:num_hf]
     X_train_lf = X_train[num_hf:]
@@ -132,4 +144,4 @@ def get_curve(f_low, f_high, num_hf, num_lf):
 
     y_test = f_high(X_test)
     assert len(X_train_hf) < len(X_train_lf)
-    return X_train_hf, X_train_lf, y_train_lf, f_high, f_low, X_test, y_test
+    return X_train_hf, X_train_lf, y_train_lf, f_high, f_low, X_test, y_test, y_train_hf
