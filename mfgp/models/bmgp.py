@@ -259,7 +259,7 @@ class BMGP(gpflow.base.Module):
         for i in range(num_steps):
             acquired_x, fopt = self.adapt_maximizer.maximize(acquisition_obj.acquisition_curve, self.lower_bound, self.upper_bound) 
             acquired_y = self.f_list[level](acquired_x)
-            self.Y_train[level] = tf.concat([self.Y_train[level], acquired_y], axis=0)
+            self.Y_train[level] = tf.concat([self.Y_train[level], acquired_y[:, None]], axis=0)
             self.X_train[level] = tf.concat([self.X_train[level], acquired_x[:, None]], axis=0)
             # print(X_train)
             # self.X_train[level] = X_temp
