@@ -186,8 +186,10 @@ class BMGP(gpflow.base.Module):
             Negative of the un-normalised log likelihood calculated over the training data.
         """
         self.fit()
+        total_num_data = tf.shape(self.Y_train_concat)[0]
+        lik_const = tf.scalar_mul(0.5, tf.cast(1/total_num_data, tf.float64))
         determinant_part = tf.math.reduce_sum(tf.linalg.diag_part(self.cholesky), axis=0)
-        data_part = tf.scalar_mul(.5, tf.matmul(tf.transpose(self.Y_train_concat), self.scaled_Y_train))
+        data_part = tf.scalar_mul(lik_const, tf.matmul(tf.transpose(self.Y_train_concat), self.scaled_Y_train))
         return tf.add(determinant_part, data_part)
 
     def predict(self, X_test:tf.Tensor, level:int = -1):
@@ -259,7 +261,7 @@ class BMGP(gpflow.base.Module):
         for i in range(num_steps):
             acquired_x, fopt = self.adapt_maximizer.maximize(acquisition_obj.acquisition_curve, self.lower_bound, self.upper_bound) 
             acquired_y = self.f_list[level](acquired_x)
-            self.Y_train[level] = tf.concat([self.Y_train[level], acquired_y], axis=0)
+            self.Y_train[level] = tf.concat([self.Y_train[level], np.atleast_2d(acquired_y)], axis=0)
             self.X_train[level] = tf.concat([self.X_train[level], acquired_x[:, None]], axis=0)
             # print(X_train)
             # self.X_train[level] = X_temp
@@ -516,6 +518,7 @@ def f_high(x):
     # return f_medium(x)*0.8
 
 if __name__ == '__main__':
+    tf.config.run_functions_eagerly(True)
     input_dim, num_low, num_medium, num_high = 1, 50, 15, 7
     f_list = [f_low, f_high]
     X_train_low = tf.random.uniform((num_low,input_dim), minval=0, maxval=1, dtype=tf.float64)
@@ -535,10 +538,10 @@ if __name__ == '__main__':
     model.fit()
     mean, var = model.predict(X_test, level=-1)
     print("Error before optimsation", tf.linalg.norm(mean - Y_test_high)/num_test)
-    # print("Trainable parameters before optimisation",model.trainable_parameters)
+    print("Trainable parameters before optimisation",model.trainable_parameters)
     print("Negative of likelihood before optimisation", model.neg_unnormalised_log_likelihood())
     model.ARD()
-    # print("Trainable parameters after optimisation",model.trainable_parameters)
+    print("Trainable parameters after optimisation",model.trainable_parameters)
     print("negative of likelihood after optimisation", model.neg_unnormalised_log_likelihood())
     mean, var = model.predict(X_test, level=-1)
     print("Error after optimsation", tf.linalg.norm(mean - Y_test_high)/num_test)

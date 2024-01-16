@@ -33,7 +33,7 @@ def get_curve2(num_hf, num_lf):
 def get_curve3(num_hf, num_lf):
     """phase shifted oscillations"""
     def f_low(t): return np.sin(8 * pi * t)
-    def f_high(t): return t**2 + np.sin(8 * pi * t + pi / 10)**2
+    def f_high(t): return np.sin(8 * pi * t + pi / 10) + t**2
     return get_curve(f_low, f_high, num_hf, num_lf)
 
 
@@ -129,19 +129,22 @@ def get_curve(f_low, f_high, num_hf, num_lf, num_test=200):
 
     # train_proportion = 0.8
 
-    X = np.linspace(0, 1, N)[:,None]
-    np.random.shuffle(X)
+    # X = np.linspace(0, 1, N)[:,None]
+    # np.random.shuffle(X)
 
-    X_train = X[:int(N)]
+    # X_train = X[:int(N)]
     # X_test = X[int(N * train_proportion):]
+    X_train_hf = np.linspace(0, 1, num_hf)[:,None]
+    X_train_lf = np.linspace(0, 1, num_lf)[:,None]
     X_test = np.linspace(0, 1, num_test)[:,None]
 
-    X_train_hf = X_train[:num_hf]
-    X_train_lf = X_train[num_hf:]
+    # X_train_hf = X_train[:num_hf]
+    # X_train_lf = X_train[num_hf:]
 
     y_train_hf = f_high(X_train_hf)
     y_train_lf = f_low(X_train_lf)
 
     y_test = f_high(X_test)
+    y_test_lf = f_low(X_test)
     assert len(X_train_hf) < len(X_train_lf)
-    return X_train_hf, X_train_lf, y_train_lf, f_high, f_low, X_test, y_test, y_train_hf
+    return X_train_hf, X_train_lf, y_train_lf, f_high, f_low, X_test, y_test, y_train_hf, y_test_lf
