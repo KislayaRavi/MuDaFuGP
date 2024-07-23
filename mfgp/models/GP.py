@@ -12,7 +12,7 @@ from mfgp.adaptation_maximizers.scipy_opt import ScipyOpt
 
 class GP(object):
 
-    def __init__(self, input_dim: int, function: callable, lower_bound: np.ndarray, upper_bound: float,
+    def __init__(self, input_dim: int, function: callable, lower_bound: np.ndarray, upper_bound: np.ndarray,
                  adapt_maximizer: AbstractMaximizer = ScipyOpt(), eps: float =1e-8, expected_acq_fn: bool= False):
         
         self.input_dim = input_dim
@@ -81,7 +81,7 @@ class GP(object):
                                 model.trainable_variables, 
                                 options=dict(maxiter=100))
 
-    def fit(self, X):
+    def fit(self, X, y = None):
         """
         Fits the gaussian process at the points given points
 
@@ -95,8 +95,11 @@ class GP(object):
         # save current high-fidelity data (used later in adaptation)
         self.X = X
 
-        # compute corresponding exact y-values
-        self.Y = self.f_exact(self.X)
+        # compute corresponding exact y-values, if they are not provided explicitly
+        if y is None:
+            self.Y = self.f_exact(self.X)
+        else:
+            self.Y = y.copy()
         assert self.Y.shape == (self.X.shape[0], 1)
 
         # create the high-fidelity model with augmented X and exact Y

@@ -316,7 +316,7 @@ class AbstractMFGP(metaclass=abc.ABCMeta):
     def numerical_grad_mean(self, X_test, delta_x=0.0001):
         return self.numerical_grad(self.get_mean, X_test, delta_x=delta_x)
 
-    def predict(self, X_test):
+    def predict(self, X_test, full_output_cov = False):
         """for an array of input vectors computes the corresponding 
         target values
 
@@ -333,7 +333,7 @@ class AbstractMFGP(metaclass=abc.ABCMeta):
         
         # if self.add_noise:
         #     self.hf_model.likelihood.variance.assign(1e-5)
-        mean, var = self.hf_model.predict_f(X_test)
+        mean, var = self.hf_model.predict_f(X_test, full_output_cov)
         return mean.numpy(), var.numpy()
 
     def sample_from_posterior(self, X_test, num_samples=1):

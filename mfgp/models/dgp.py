@@ -247,9 +247,9 @@ class AugmentedLayerAbstract(DGPLayerBase):
         fused_X = tf.concat(fused_X, axis=1)
         return fused_X
     
-    def predict(self, X_test):
+    def predict(self, X_test, full_cov=False):
         fused_X = self.fuse_info(X_test)
-        mean, var = self.predict_f(fused_X, full_cov=False, full_output_cov=False)
+        mean, var = self.predict_f(fused_X, full_cov=full_cov)
         return mean, var  
     
     def predict_grad(self, X_test):
@@ -271,6 +271,33 @@ class AugmentedLayerAbstract(DGPLayerBase):
 
 
 class NARDGPLayer(AugmentedLayerAbstract):
+
+    def __init__(self, function, dim, likelihood, num_inducing_points, 
+                 lower_bound, upper_bound, previous_layer: gpflow.models, 
+                 num_delays=0, tau=0.001, **kwargs):
+        if num_delays > 0:
+            num_delays = 0
+            warnings.warn("NARDGP layer does not support delays. Setting num_delays to 0.")
+        super().__init__(function, dim, likelihood, num_inducing_points, lower_bound, upper_bound, previous_layer, num_delays, tau, **kwargs)
+        
+    def get_kernel(self, dim, kern_class1=SquaredExponential, kern_class2=SquaredExponential, 
+                    kern_class3=SquaredExponential):
+        std_indices = np.arange(dim)
+        aug_input_dim = self.get_num_aug_indices()
+        aug_indices = np.arange(dim, dim + aug_input_dim)
+        kern1 = kern_class1(active_dims=aug_indices)
+        kern2 = kern_class2(active_dims=std_indices)
+        kern3 = kern_class3(active_dims=std_indices)
+        white_noise = gpflow.kernels.White()
+        white_noise.variance.assign(1e-6)
+        gpflow.utilities.set_trainable(white_noise.variance, False)
+        kern1.variance.assign(1)
+        kern2.variance.assign(1)
+        kern3.variance.assign(1)
+        gpflow.utilities.set_trainable(kern1.variance, False)
+        return kern1 * kern2 + kern3 + white_noise
+    
+class NARDGPLayer_wiht_noise(AugmentedLayerAbstract):
 
     def __init__(self, function, dim, likelihood, num_inducing_points, 
                  lower_bound, upper_bound, previous_layer: gpflow.models, 

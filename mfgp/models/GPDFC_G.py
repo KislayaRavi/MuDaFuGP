@@ -11,8 +11,8 @@ class GPDFC_General(AbstractMFGPGeneral):
     Uses standard composite kernel with ARD weigts.
     """
 
-    def __init__(self, input_dim: int, num_derivatives: int, tau: float, f_list: np.ndarray, init_X: np.ndarray,
+    def __init__(self, input_dim: int, num_derivatives: int, tau: float, f_list: np.ndarray, init_X: np.ndarray, init_y: np.ndarray,
                 lower_bound: np.ndarray, upper_bound: np.ndarray, adapt_maximizer: AbstractMaximizer, **kwargs):
         name = 'GPDFC'
-        super().__init__(name, input_dim, f_list, init_X, num_derivatives, tau, lower_bound, upper_bound,
+        super().__init__(name, input_dim, f_list, init_X, init_y, num_derivatives, tau, lower_bound, upper_bound,
                          adapt_maximizer, **kwargs)

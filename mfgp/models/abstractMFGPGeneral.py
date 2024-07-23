@@ -11,8 +11,8 @@ import mfgp.models as models
 class AbstractMFGPGeneral(metaclass=abc.ABCMeta):
 
     # @abc.abstractmethod
-    def __init__(self, name: str, input_dim: int, f_list: list, init_X: list, 
-                 num_derivatives: int, tau: float, lower_bound: np.ndarray, upper_bound: float,
+    def __init__(self, name: str, input_dim: int, f_list: list, init_X: list, init_y: list, 
+                 num_derivatives: int, tau: float, lower_bound: np.ndarray, upper_bound: np.ndarray,
                  adapt_maximizer: AbstractMaximizer, eps: float = 1e-8, 
                  expected_acq_fn: bool=False, monte_carlo_prediction: bool=False,
                  surrogate_lowest_fidelity: bool=True, f_lowest_grad=None):
@@ -23,7 +23,7 @@ class AbstractMFGPGeneral(metaclass=abc.ABCMeta):
         self.num_derivatives, self.tau = num_derivatives, tau 
         self.f_list, self.adapt_maximizer = f_list, adapt_maximizer 
         self.eps, self.num_derivatives, self.surrogate_lowest_fidelity = eps, num_derivatives, surrogate_lowest_fidelity
-        self.n_fidelities, self.expected_acq_fn = len(f_list), expected_acq_fn
+        self.n_fidelities, self.expected_acq_fn = len(init_X), expected_acq_fn #len(f_list), expected_acq_fn
 
         # data bounds
         if lower_bound is None and upper_bound is None:
@@ -36,7 +36,46 @@ class AbstractMFGPGeneral(metaclass=abc.ABCMeta):
         self.models, self.monte_carlo_prediction = [], monte_carlo_prediction
         if monte_carlo_prediction:
             warnings.warn('The implementation of the derivative is not correct when one uses prediction by montecarlo method')
-        self.__initialise_models(init_X, f_lowest_grad)
+        #self.__initialise_models(init_X, f_lowest_grad)
+        self.__initialise_models_with_data(init_X, init_y) #, f_lowest_grad)
+
+
+    #############################################################
+    #################### experimental setup #####################
+    #############################################################
+
+    def __initialise_one_model_with_data(self, hf_X, hf_Y, f_low_surrogate): #, f_low_grad):
+        model = None 
+        if self.name == 'NARGP':
+            model = models.NARGP(self.input_dim, None, f_low_surrogate, self.lower_bound, self.upper_bound)
+        elif self.name == 'GPDF':
+            model = models.GPDF(self.input_dim, self.tau, self.num_derivatives, None, f_low_surrogate, self.lower_bound, self.upper_bound)
+        else: 
+            model = models.GPDFC(self.input_dim, self.tau, self.num_derivatives, None, f_low_surrogate, self.lower_bound, self.upper_bound)
+        
+        model.fit_with_val(hf_X, hf_Y)
+        return model 
+                
+    def __initialise_models_with_data(self, init_X, init_y): #, f_lowest_grad):
+        if self.surrogate_lowest_fidelity:
+            self.models.append(models.GP(self.input_dim, None, self.lower_bound, self.upper_bound, 
+                                         eps=self.eps, expected_acq_fn=self.expected_acq_fn))
+            self.models[0].fit(X = init_X[0], y = init_y[0])
+            starting_index = 1
+        #else:
+        #    self.models.append(self.f_list[0])
+        #    self.models.append(self.__initialise_one_model(self.models[0], self.f_list[1], init_X[1], self.models[0], f_lowest_grad))
+        #    starting_index = 2
+        for i in range(starting_index, self.n_fidelities):
+            #if self.monte_carlo_prediction:
+            #    self.models.append(self.__initialise_one_model_with_data(self.f_list[i-1], self.f_list[i], 
+            #                                                   init_X[i], self.models[i-1].one_sample_from_posterior, self.models[i-1].predict_grad))
+            #else:
+            self.models.append(self.__initialise_one_model_with_data(init_X[i], init_y[i], self.models[i-1].get_mean))# self.models[i-1].get_mean, self.models[i-1].predict_grad))
+    
+    #############################################################
+    #################### experimental setup #####################
+    #############################################################
 
     def __initialise_one_model(self, f_low, f_high, hf_X, f_low_surrogate, f_low_grad):
         model = None 
